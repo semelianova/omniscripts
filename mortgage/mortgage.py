@@ -12,19 +12,32 @@ import time
 data_directory = "/nfs/site/home/gashiman/nfs/mortgage-data"
 
 def run_pd_workflow(quarter=1, year=2000, perf_file="", **kwargs):
-#    con = connect(user="admin", password="HyperInteractive", host="localhost", dbname="omnisci")
+    con = connect(user="admin", password="HyperInteractive", host="localhost", dbname="omnisci", port=62074)
 
     t1 = time.time()
+    # Load names
     names = pd_load_names()
+    con.execute('DROP TABLE IF EXISTS names;')
+    con.create_table('names', names)
+    # Load acquisition
     acq_pdf = pd_load_acquisition_csv(acquisition_path =
             os.path.join(data_directory, "acq", "Acquisition_" + str(year) + "Q" + str(quarter) + ".txt"))
+    con.execute('DROP TABLE IF EXISTS acq;')
+    con.create_table('acq', acq_pdf)
+    # Load perf
     perf_df_tmp = pd_load_performance_csv(perf_file)
+    con.execute('DROP TABLE IF EXISTS perf;')
+    con.create_table('perf', perf_df_tmp)
     print("read time", time.time()-t1)
+
     t1 = time.time()
+    con.execute('SELECT * FROM acq LEFT JOIN names ON acq.seller_name = names.seller_name;');
+    con.execute('ALTER TABLE acq DROP COLUMN seller_name;');
+    con.execute('ALTER TABLE acq RENAME COLUMN "new_seller_name" to "seller_name";');
     acq_pdf = acq_pdf.merge(names, how='left', on=['seller_name'])
     acq_pdf.drop(columns=['seller_name'], inplace=True)
-    acq_pdf['seller_name'] = acq_pdf['new']
-    acq_pdf.drop(columns=['new'], inplace=True)
+    acq_pdf['seller_name'] = acq_pdf['new_seller_name']
+    acq_pdf.drop(columns=['new_seller_name'], inplace=True)
     pdf = perf_df_tmp
     everdf = create_ever_features(pdf)
     delinq_merge = create_delinq_features(pdf)
@@ -99,7 +112,9 @@ def pd_load_performance_csv(performance_path, **kwargs):
 
     print(performance_path)
 
-    return pd.read_csv(performance_path, names=cols, delimiter='|', dtype=dtypes, parse_dates=[1,8,13,14,15,16])
+    p = pd.read_csv(performance_path, names=cols, delimiter='|', dtype=dtypes, parse_dates=[1,8,13,14,15,16])
+    print(p.info())
+    return p
 
 def pd_load_acquisition_csv(acquisition_path, **kwargs):
     """ Loads acquisition data
@@ -165,13 +180,14 @@ def pd_load_names(**kwargs):
     """
 
     cols = [
-        'seller_name', 'new'
+        'seller_name', 'new_seller_name'
     ]
 
-    dtypes = {'seller_name':str, 'new':str}
+    dtypes = {'seller_name':str, 'new_seller_name':str}
 
-    return pd.read_csv(os.path.join(data_directory, "names.csv"), names=cols, delimiter='|', dtype=dtypes)
-
+    n = pd.read_csv(os.path.join(data_directory, "names.csv"), names=cols, delimiter='|', dtype=dtypes)
+    print (n.info())
+    return n
 
 def create_ever_features(pdf, **kwargs):
     everdf = pdf[['loan_id', 'current_loan_delinquency_status']]
