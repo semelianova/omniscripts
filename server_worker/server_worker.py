@@ -120,7 +120,7 @@ class OmnisciServerWorker:
     def ipc_connect_to_server(self, database=None):
         "Connect to Omnisci server using Ibis framework"
 
-        self.connect_to_server(database=database, ipc=True)
+        return self.connect_to_server(database=database, ipc=True)
 
     def terminate(self):
         del self._conn
