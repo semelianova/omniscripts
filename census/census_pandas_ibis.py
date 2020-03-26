@@ -14,6 +14,7 @@ from utils import (
     load_data_pandas,
     mse,
     print_times,
+    split,
 )
 
 warnings.filterwarnings("ignore")
@@ -23,16 +24,8 @@ warnings.filterwarnings("ignore")
 # https://rapidsai-data.s3.us-east-2.amazonaws.com/datasets/ipums_education2income_1970-2010.csv.gz
 
 
-def etl_pandas(filename, columns_names, columns_types):
-    etl_times = {
-        "t_readcsv": 0.0,
-        "t_where": 0.0,
-        "t_arithm": 0.0,
-        "t_fillna": 0.0,
-        "t_drop": 0.0,
-        "t_typeconvert": 0.0,
-        "t_etl": 0.0,
-    }
+def etl_pandas(filename, columns_names, columns_types, etl_keys):
+    etl_times = {key: 0.0 for key in etl_keys}
 
     t0 = timer()
     df = load_data_pandas(
@@ -74,33 +67,21 @@ def etl_pandas(filename, columns_names, columns_types):
         "INCTOT_HEAD",
         "SEX_HEAD",
     ]
-    t0 = timer()
     df = df[keep_cols]
-    etl_times["t_drop"] += timer() - t0
 
-    t0 = timer()
     df = df.query("INCTOT != 9999999")
     df = df.query("EDUC != -1")
     df = df.query("EDUCD != -1")
-    etl_times["t_where"] += timer() - t0
 
-    t0 = timer()
     df["INCTOT"] = df["INCTOT"] * df["CPI99"]
-    etl_times["t_arithm"] += timer() - t0
 
     for column in keep_cols:
-        t0 = timer()
         df[column] = df[column].fillna(-1)
-        etl_times["t_fillna"] += timer() - t0
 
-        t0 = timer()
         df[column] = df[column].astype("float64")
-        etl_times["t_typeconvert"] += timer() - t0
 
-    t0 = timer()
     y = df["EDUC"]
     X = df.drop(columns=["EDUC", "CPI99"])
-    etl_times["t_drop"] += timer() - t0
 
     etl_times["t_etl"] = timer() - t_etl_start
     print("DataFrame shape:", X.shape)
@@ -119,22 +100,13 @@ def etl_ibis(
     create_new_table,
     connection_func,
     validation,
+    etl_keys,
 ):
-
-    etl_times = {
-        "t_readcsv": 0.0,
-        "t_where": 0.0,
-        "t_arithm": 0.0,
-        "t_fillna": 0.0,
-        "t_pandas_drop": 0.0,
-        "t_drop": 0.0,
-        "t_typeconvert": 0.0,
-        "t_etl": 0.0,
-    }
-
     import ibis
 
     time.sleep(2)
+    etl_times = {key: 0.0 for key in etl_keys}
+
     omnisci_server_worker.connect_to_server()
 
     omnisci_server_worker.create_database(
@@ -199,23 +171,17 @@ def etl_ibis(
         keep_cols.append("id")
 
     table = table[keep_cols]
-    etl_times["t_drop"] += timer() - t_etl_start
 
     # first, we do all filters and eliminate redundant fillna operations for EDUC and EDUCD
-    t0 = timer()
     table = table[table.INCTOT != 9999999]
     table = table[table["EDUC"].notnull()]
     table = table[table["EDUCD"].notnull()]
-    etl_times["t_where"] += timer() - t0
 
-    t0 = timer()
     table = table.set_column("INCTOT", table["INCTOT"] * table["CPI99"])
-    etl_times["t_arithm"] += timer() - t0
 
     cols = []
     # final fillna and casting for necessary columns
     for column in keep_cols:
-        t0 = timer()
         cols.append(
             ibis.case()
             .when(table[column].notnull(), table[column])
@@ -224,17 +190,14 @@ def etl_ibis(
             .cast("float64")
             .name(column)
         )
-        etl_times["t_fillna"] += timer() - t0
 
     table = table.mutate(cols)
 
     df = table.execute()
 
     # here we use pandas to split table
-    t0 = timer()
     y = df["EDUC"]
     X = df.drop(["EDUC", "CPI99"], axis=1)
-    etl_times["t_pandas_drop"] = timer() - t0
 
     etl_times["t_etl"] = timer() - t_etl_start
     print("DataFrame shape:", X.shape)
@@ -242,7 +205,7 @@ def etl_ibis(
     return df, X, y, etl_times
 
 
-def ml(X, y, random_state, n_runs, train_size, optimizer):
+def ml(X, y, random_state, n_runs, test_size, optimizer, ml_keys, ml_score_keys):
     if optimizer == "intel":
         print("Intel optimized sklearn is used")
         from daal4py.sklearn.model_selection import train_test_split
@@ -260,16 +223,15 @@ def ml(X, y, random_state, n_runs, train_size, optimizer):
     clf = lm.Ridge()
 
     mse_values, cod_values = [], []
-    ml_times = {"t_split": 0.0, "t_ML": 0.0, "t_train": 0.0, "t_inference": 0.0}
-    ml_scores = {"mse_mean": 0.0, "cod_mean": 0.0, "mse_dev": 0.0, "cod_dev": 0.0}
+    ml_times = {key: 0.0 for key in ml_keys}
+    ml_scores = {key: 0.0 for key in ml_score_keys}
 
     print("ML runs: ", n_runs)
     for i in range(n_runs):
-        t0 = timer()
-        X_train, X_test, y_train, y_test = train_test_split(
-            X, y, train_size=train_size, random_state=random_state
+        (X_train, X_test, y_train, y_test), split_time = split(
+            X, y, test_size=test_size, random_state=random_state
         )
-        ml_times["t_split"] += timer() - t0
+        ml_times["t_train_test_split"] = split_time
         random_state += 777
 
         t0 = timer()
@@ -283,12 +245,12 @@ def ml(X, y, random_state, n_runs, train_size, optimizer):
         mse_values.append(mse(y_test, y_pred))
         cod_values.append(cod(y_test, y_pred))
 
-    ml_times["t_ML"] += ml_times["t_train"] + ml_times["t_inference"]
+    ml_times["t_ml"] += ml_times["t_train"] + ml_times["t_inference"]
 
     ml_scores["mse_mean"] = sum(mse_values) / len(mse_values)
     ml_scores["cod_mean"] = sum(cod_values) / len(cod_values)
     ml_scores["mse_dev"] = pow(
-        sum([(mse_value - mse_mean) ** 2 for mse_value in mse_values])
+        sum([(mse_value - ml_scores["mse_mean"]) ** 2 for mse_value in mse_values])
         / (len(mse_values) - 1),
         0.5,
     )
@@ -313,7 +275,7 @@ def run_benchmark(parameters):
 
     # ML specific
     N_RUNS = 50
-    TRAIN_SIZE = 0.9
+    TEST_SIZE = 0.1
     RANDOM_STATE = 777
 
     columns_names = [
@@ -410,6 +372,10 @@ def run_benchmark(parameters):
         "float64",
         "float64",
     ]
+    etl_keys = ["t_readcsv", "t_etl"]
+    ml_keys = ["t_train_test_split", "t_ml", "t_train", "t_inference"]
+
+    ml_score_keys = ["mse_mean", "cod_mean", "mse_dev", "cod_dev"]
 
     try:
 
@@ -435,6 +401,7 @@ def run_benchmark(parameters):
                 create_new_table=not parameters["dni"],
                 connection_func=parameters["connect_to_sever"],
                 validation=parameters["validation"],
+                etl_keys=etl_keys,
             )
 
             print_times(times=etl_times_ibis, backend="Ibis")
@@ -442,12 +409,14 @@ def run_benchmark(parameters):
 
             if not parameters["no_ml"]:
                 ml_scores_ibis, ml_times_ibis = ml(
-                    X_ibis,
-                    y_ibis,
-                    RANDOM_STATE,
-                    N_RUNS,
-                    TRAIN_SIZE,
-                    parameters["optimizer"],
+                    X=X_ibis,
+                    y=y_ibis,
+                    random_state=RANDOM_STATE,
+                    n_runs=N_RUNS,
+                    test_size=TEST_SIZE,
+                    optimizer=parameters["optimizer"],
+                    ml_keys=ml_keys,
+                    ml_score_keys=ml_score_keys,
                 )
                 print_times(times=ml_times_ibis, backend="Ibis")
                 ml_times_ibis["Backend"] = "Ibis"
@@ -458,6 +427,7 @@ def run_benchmark(parameters):
             parameters["data_file"],
             columns_names=columns_names,
             columns_types=columns_types,
+            etl_keys=etl_keys,
         )
 
         print_times(times=etl_times, backend=parameters["pandas_mode"])
@@ -465,7 +435,15 @@ def run_benchmark(parameters):
 
         if not parameters["no_ml"]:
             ml_scores, ml_times = ml(
-                X, y, RANDOM_STATE, N_RUNS, TRAIN_SIZE, parameters["optimizer"]
+                X=X,
+                y=y,
+                random_state=RANDOM_STATE,
+                n_runs=N_RUNS,
+                test_size=TEST_SIZE,
+                optimizer=parameters["optimizer"],
+                ml_keys=ml_keys,
+                ml_score_keys=ml_score_keys,
+
             )
             print_times(times=ml_times, backend=parameters["pandas_mode"])
             ml_times["Backend"] = parameters["pandas_mode"]
@@ -473,10 +451,11 @@ def run_benchmark(parameters):
             ml_scores["Backend"] = parameters["pandas_mode"]
 
         if parameters["validation"]:
-            compare_dataframes(
-                ibis_dfs=(X_ibis, y_ibis),
-                pandas_dfs=(X, y),
-            )
+            pass
+            # compare_dataframes(
+            #     ibis_dfs=(X_ibis, y_ibis),
+            #     pandas_dfs=(X, y),
+            # )
 
         return {"ETL": [etl_times_ibis, etl_times], "ML": [ml_times_ibis, ml_times]}
     except Exception:

@@ -21,59 +21,6 @@ from utils import (
 
 warnings.filterwarnings("ignore")
 
-
-def compare_tables(table1, table2):
-    if table1.equals(table2):
-        print("Tables are equal")
-        return True
-    else:
-        print("\ntables are not equal, table1:")
-        print(table1.info())
-        print(table1)
-        print("\ntable2:")
-        print(table2.info())
-        print(table2)
-        return False
-
-
-def compare_dataframes(ibis_df, pandas_df):
-    comparison_result = True
-    for i in range(len(ibis_df)):
-        ibis_df[i].index = pandas_df[i].index
-        comparison_result = comparison_result and ibis_df[i].equals(pandas_df[i])
-
-    if comparison_result:
-        print("Tables are equal")
-        return True
-    else:
-        diff = {}
-        for i in range(len(ibis_df)):
-            diff_df = ibis_df[i] - pandas_df[i]
-            if len(diff_df.shape) > 1:
-                diff["DataFrame %s max deviation" % str(i + 1)] = diff_df.max().max()
-                diff["DataFrame %s min deviation" % str(i + 1)] = diff_df.min().min()
-            else:
-                diff["DataFrame %s max deviation" % str(i + 1)] = diff_df.max()
-                diff["DataFrame %s min deviation" % str(i + 1)] = diff_df.min()
-
-        check_res = True
-        lowest_order = 0.0001
-        print("Values check summary:")
-        for dev_type, value in diff.items():
-            print(dev_type, ":", value)
-            check_res = check_res and (abs(value) < lowest_order)
-
-        if check_res == True:
-            print(
-                "Deviation of values is lower, than values smallest order -> tables are equal"
-            )
-        else:
-            print(
-                "Deviation of values is higher, than values smallest order -> tables are unequal"
-            )
-        return check_res
-
-
 # Dataset link
 # https://www.kaggle.com/c/santander-customer-transaction-prediction/data
 
@@ -81,18 +28,9 @@ def compare_dataframes(ibis_df, pandas_df):
 # 1) Patched OmniSci version (https://github.com/intel-go/omniscidb/tree/ienkovich/santander)
 # 2) Ibis version not older than e60d1af commit (otherwise apply ibis-santander.patch patch)
 
-def etl_pandas(filename, columns_names, columns_types):
-    etl_times = {
-        "t_groupby_agg": 0.0,
-        "t_drop": 0.0,
-        "t_merge": 0.0,
-        "t_readcsv": 0.0,
-        "t_train_test_split": 0.0,
-        "t_where": 0.0,
-        "t_reset_index": 0.0,
-        "t_assign_data": 0.0,
-        "t_etl": 0.0,
-    }
+
+def etl_pandas(filename, columns_names, columns_types, etl_keys):
+    etl_times = {key: 0.0 for key in etl_keys}
 
     t0 = timer()
     train_pd = load_data_pandas(
@@ -110,50 +48,26 @@ def etl_pandas(filename, columns_names, columns_types):
 
     for i in range(200):
         col = "var_%d" % i
-        t0 = timer()
         var_count = train_pd.groupby(col).agg({col: "count"})
-        etl_times["t_groupby_agg"] += timer() - t0
 
-        t0 = timer()
         var_count.columns = ["%s_count" % col]
         var_count = var_count.reset_index()
-        etl_times["t_reset_index"] += timer() - t0
 
         t0 = timer()
         train_pd = train_pd.merge(var_count, on=col, how="left")
-        etl_times["t_merge"] += timer() - t0
 
     for i in range(200):
         col = "var_%d" % i
 
         t0 = timer()
         mask = train_pd["%s_count" % col] > 1
-        etl_times["t_where"] += timer() - t0
 
         t0 = timer()
         train_pd.loc[mask, "%s_gt1" % col] = train_pd.loc[mask, col]
-        etl_times["t_assign_data"] += timer() - t0
-
-    # train, test data split
-    t0 = timer()
-    train, valid = train_pd[:-10000], train_pd[-10000:]
-    etl_times["t_train_test_split"] = timer() - t0
-
-    t0 = timer()
-    x_train = train.drop(["target", "ID_code"], axis=1)
-    etl_times["t_drop"] += timer() - t0
-
-    y_train = train["target"]
-
-    t0 = timer()
-    x_test = valid.drop(["target", "ID_code"], axis=1)
-    etl_times["t_drop"] += timer() - t0
-
-    y_test = valid["target"]
 
     etl_times["t_etl"] = timer() - t_etl_begin
 
-    return x_train, y_train, x_test, y_test, etl_times
+    return train_pd, etl_times
 
 
 def etl_ibis(
@@ -168,10 +82,11 @@ def etl_ibis(
         connection_func,
         validation,
         run_import_queries,
+        etl_keys,
 ):
     tmp_table_name = "tmp_table"
 
-    etl_times = {"t_groupby_merge_where": 0.0, "t_train_test_split": 0.0, "t_etl": 0.0}
+    etl_times = {key: 0.0 for key in etl_keys}
 
     omnisci_server_worker.create_database(
         database_name, delete_if_exists=delete_old_database
@@ -235,7 +150,7 @@ def etl_ibis(
         table_import_query = conn.database(database_name).table(tmp_table_name)
         t0 = timer()
         table_import_query.read_csv(filename, delimiter=",")
-        etl_times_import["t_readcsv_by_ibis"] = timer() - t0
+        etl_times_import["t_readcsv"] = timer() - t0
 
         # data file import by FSI
         omnisci_server_worker.drop_table(tmp_table_name)
@@ -265,7 +180,9 @@ def etl_ibis(
         )
 
         table_import = conn.database(database_name).table(table_name)
+        t0 = timer()
         table_import.read_csv(filename, delimiter=",")
+        etl_times["t_readcsv"] = timer() - t0
 
     conn = connection_func()
     db = conn.database(database_name)
@@ -274,7 +191,7 @@ def etl_ibis(
     # group_by/count, merge (join) and filtration queries
     # We are making 400 columns and then insert them into original table thus avoiding
     # nested sql requests
-    t0 = timer()
+    t_etl_start = timer()
     count_cols = []
     orig_cols = ["ID_code", "target"] + ['var_%s' % i for i in range(200)]
     cast_cols = []
@@ -304,28 +221,34 @@ def etl_ibis(
     table = table.mutate(cast_cols)
 
     table_df = table.execute()
-    etl_times["t_groupby_merge_where"] = timer() - t0
 
-    # rows split query
+    etl_times["t_etl"] = timer() - t_etl_start
+    return table_df, etl_times
+
+
+def split_step(data):
     t0 = timer()
-    training_part, validation_part = table_df[:-10000], table_df[-10000:]
-    etl_times["t_train_test_split"] = timer() - t0
+    train, valid = data[:-10000], data[-10000:]
+    split_time = timer() - t0
 
-    etl_times["t_etl"] = etl_times["t_groupby_merge_where"] + etl_times["t_train_test_split"]
+    x_train = train.drop(["target", "ID_code"], axis=1)
 
-    x_train = training_part.drop(['target0'], axis=1)
-    y_train = training_part['target0']
-    x_test = validation_part.drop(['target0'], axis=1)
-    y_test = validation_part['target0']
+    y_train = train["target"]
 
-    return x_train, y_train, x_test, y_test, etl_times
+    x_test = valid.drop(["target", "ID_code"], axis=1)
+
+    y_test = valid["target"]
+
+    return (x_train, y_train, x_test, y_test), split_time
 
 
-def ml(x_train, y_train, x_test, y_test):
+def ml(ml_data, ml_keys, ml_score_keys):
     import xgboost
 
-    ml_times = {"t_ML": 0.0, "t_train": 0.0, "t_inference": 0.0, "t_dmatrix": 0.0}
-    ml_scores = {"mse": 0.0, "cod": 0.0}
+    ml_times = {key: 0.0 for key in ml_keys}
+    ml_scores = {key: 0.0 for key in ml_score_keys}
+
+    (x_train, y_train, x_test, y_test), ml_times["t_train_test_split"] = split_step(ml_data)
 
     t0 = timer()
     training_dmat_part = xgboost.DMatrix(data=x_train, label=y_train)
@@ -364,7 +287,7 @@ def ml(x_train, y_train, x_test, y_test):
     ml_scores["mse"] = mse(y_test, yp)
     ml_scores["cod"] = cod(y_test, yp)
 
-    ml_times["t_ML"] += ml_times["t_train"] + ml_times["t_inference"]
+    ml_times["t_ml"] += ml_times["t_train"] + ml_times["t_inference"]
 
     return ml_scores, ml_times
 
@@ -390,6 +313,9 @@ def run_benchmark(parameters):
     etl_times = None
     ml_times = None
 
+    etl_keys = ["t_readcsv", "t_etl"]
+    ml_keys = ["t_train_test_split", "t_ml", "t_train", "t_inference", "t_dmatrix"]
+    ml_score_keys = ["mse", "cod"]
     try:
 
         import_pandas_into_module_namespace(
@@ -400,7 +326,7 @@ def run_benchmark(parameters):
         )
 
         if not parameters["no_ibis"]:
-            x_train_ibis, y_train_ibis, x_test_ibis, y_test_ibis, etl_times_ibis = etl_ibis(
+            ml_data_ibis, etl_times_ibis = etl_ibis(
                 filename=parameters["data_file"],
                 run_import_queries=False,
                 columns_names=columns_names,
@@ -412,25 +338,26 @@ def run_benchmark(parameters):
                 create_new_table=not parameters["dni"],
                 connection_func=parameters["connect_to_sever"],
                 validation=parameters["validation"],
+                etl_keys=etl_keys,
             )
 
             print_times(times=etl_times_ibis, backend="Ibis")
             etl_times_ibis["Backend"] = "Ibis"
 
-        x_train, y_train, x_test, y_test, etl_times = etl_pandas(
+        ml_data, etl_times = etl_pandas(
             filename=parameters["data_file"],
             columns_names=columns_names,
-            columns_types=columns_types_pd
+            columns_types=columns_types_pd,
+            etl_keys=etl_keys,
         )
         print_times(times=etl_times, backend=parameters["pandas_mode"])
         etl_times["Backend"] = parameters["pandas_mode"]
 
         if not parameters["no_ml"]:
             ml_scores, ml_times = ml(
-                x_train=x_train,
-                y_train=y_train,
-                x_test=x_test,
-                y_test=y_test,
+                ml_data=ml_data,
+                ml_keys=ml_keys,
+                ml_score_keys=ml_score_keys,
             )
             print_times(times=ml_times, backend=parameters["pandas_mode"])
             ml_times["Backend"] = parameters["pandas_mode"]
@@ -439,10 +366,9 @@ def run_benchmark(parameters):
 
             if not parameters["no_ibis"]:
                 ml_scores_ibis, ml_times_ibis = ml(
-                    x_train=x_train_ibis,
-                    y_train=y_train_ibis,
-                    x_test=x_test_ibis,
-                    y_test=y_test_ibis,
+                    ml_data=ml_data_ibis,
+                    ml_keys=ml_keys,
+                    ml_score_keys=ml_score_keys,
                 )
                 print_times(times=ml_times_ibis, backend="Ibis")
                 ml_times_ibis["Backend"] = "Ibis"
@@ -451,17 +377,17 @@ def run_benchmark(parameters):
 
         # Results validation block (comparison of etl_ibis and etl_pandas outputs)
         if parameters["validation"] and not parameters["no_ibis"]:
-            print("Validation of ETL query results with original input table ...")
-            cols_to_sort = ['var_0', 'var_1', 'var_2', 'var_3', 'var_4']
-
-            x_ibis = pd.concat([x_train_ibis, x_test_ibis])
-            y_ibis = pd.concat([y_train_ibis, y_test_ibis])
-            etl_ibis_res = pd.concat([x_ibis, y_ibis], axis=1)
-            etl_ibis_res = etl_ibis_res.sort_values(by=cols_to_sort)
-            x = pd.concat([x_train, x_test])
-            y = pd.concat([y_train, y_test])
-            etl_pandas_res = pd.concat([x, y], axis=1)
-            etl_pandas_res = etl_pandas_res.sort_values(by=cols_to_sort)
+            # print("Validation of ETL query results with original input table ...")
+            # cols_to_sort = ['var_0', 'var_1', 'var_2', 'var_3', 'var_4']
+            #
+            # x_ibis = pd.concat([x_train_ibis, x_test_ibis])
+            # y_ibis = pd.concat([y_train_ibis, y_test_ibis])
+            # etl_ibis_res = pd.concat([x_ibis, y_ibis], axis=1)
+            # etl_ibis_res = etl_ibis_res.sort_values(by=cols_to_sort)
+            # x = pd.concat([x_train, x_test])
+            # y = pd.concat([y_train, y_test])
+            # etl_pandas_res = pd.concat([x, y], axis=1)
+            # etl_pandas_res = etl_pandas_res.sort_values(by=cols_to_sort)
 
             # print("Validating queries results (var_xx columns) ...")
             # compare_result1 = compare_dataframes(ibis_df=[etl_ibis_res[var_cols]],

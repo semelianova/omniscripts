@@ -1,10 +1,10 @@
 import argparse
 import glob
 import os
-import random
 import re
+import socket
 import subprocess
-from datetime import datetime
+from timeit import default_timer as timer
 
 import hiyapyco
 from braceexpand import braceexpand
@@ -196,17 +196,6 @@ def print_times(times, backend=None):
         print("{} = {:.5f} s".format(time_name, time))
 
 
-def int_random(least, greatest, seed=True):
-    if seed:
-        random.seed(datetime.now())
-    return random.randint(least, greatest)
-
-
-def random_if_default(value, least, greater, default=-1):
-    if value == default:
-        return int_random(least, greater)
-    return value
-
 def mse(y_test, y_pred):
     return ((y_test - y_pred) ** 2).mean()
 
@@ -216,3 +205,32 @@ def cod(y_test, y_pred):
     total = ((y_test - y_bar) ** 2).sum()
     residuals = ((y_test - y_pred) ** 2).sum()
     return 1 - (residuals / total)
+
+
+def check_port_availability(port_num):
+    sock = socket.socket()
+    result = sock.connect_ex(('127.0.0.1', port_num))
+    sock.close()
+    return result
+
+
+def find_free_port():
+    min_port_num = 49152
+    max_port_num = 65535
+    port_num = min_port_num
+    while port_num < max_port_num:
+        if check_port_availability(port_num) == 0:
+            return port_num
+        port_num += 1
+    raise Exception("Can't find availible ports")
+
+
+def split(X, y, test_size=0.1, random_state=None):
+    from sklearn.model_selection import train_test_split
+    t0 = timer()
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=test_size, stratify=y, random_state=random_state
+    )
+    split_time = timer() - t0
+
+    return (X_train, y_train, X_test, y_test), split_time

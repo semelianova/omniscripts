@@ -17,6 +17,7 @@ from utils import (
     compare_dataframes,
     import_pandas_into_module_namespace,
     print_times,
+    split,
 )
 
 
@@ -49,10 +50,8 @@ def skew_workaround(table):
 def etl_cpu_ibis(table, table_meta, etl_times):
     t_etl_start = timer()
 
-    t0 = timer()
     table = table.mutate(flux_ratio_sq=(table["flux"] / table["flux_err"]) ** 2)
     table = table.mutate(flux_by_flux_ratio_sq=table["flux"] * table["flux_ratio_sq"])
-    etl_times["t_arithm"] += timer() - t0
 
     aggs = [
         table.passband.mean().name("passband_mean"),
@@ -74,11 +73,7 @@ def etl_cpu_ibis(table, table_meta, etl_times):
         (table["flux"] ** 3).sum().name("flux_sum3"),
     ]
 
-    t0 = timer()
     table = table.groupby("object_id").aggregate(aggs)
-    etl_times["t_groupby_agg"] += timer() - t0
-
-    t0 = timer()
     table = table.mutate(flux_diff=table["flux_max"] - table["flux_min"])
     table = table.mutate(flux_dif2=table["flux_diff"] / table["flux_mean"])
     table = table.mutate(
@@ -88,19 +83,13 @@ def etl_cpu_ibis(table, table_meta, etl_times):
     table = table.mutate(mjd_diff=table["mjd_max"] - table["mjd_min"])
     # skew compute
     table = skew_workaround(table)
-    etl_times["t_arithm"] += timer() - t0
 
-    t0 = timer()
     table = table.drop(
         ["mjd_max", "mjd_min", "flux_count", "flux_sum1", "flux_sum2", "flux_sum3"]
     )
-    etl_times["t_drop"] += timer() - t0
 
-    t0 = timer()
     table_meta = table_meta.drop(["ra", "decl", "gal_l", "gal_b"])
-    etl_times["t_drop"] += timer() - t0
 
-    t0 = timer()
     # df_meta = df_meta.merge(agg_df, on="object_id", how="left")
     # try to workaround
     table_meta = table_meta.join(table, ["object_id"], how="left")[
@@ -122,7 +111,6 @@ def etl_cpu_ibis(table, table_meta, etl_times):
         table.flux_dif3,
         table.mjd_diff,
     ]
-    etl_times["t_merge"] += timer() - t0
 
     df = table_meta.execute()
 
@@ -134,10 +122,8 @@ def etl_cpu_ibis(table, table_meta, etl_times):
 def etl_cpu_pandas(df, df_meta, etl_times):
     t_etl_start = timer()
 
-    t0 = timer()
     df["flux_ratio_sq"] = np.power(df["flux"] / df["flux_err"], 2.0)
     df["flux_by_flux_ratio_sq"] = df["flux"] * df["flux_ratio_sq"]
-    etl_times["t_arithm"] += timer() - t0
 
     aggs = {
         "passband": ["mean"],
@@ -148,13 +134,10 @@ def etl_cpu_pandas(df, df_meta, etl_times):
         "flux_ratio_sq": ["sum"],
         "flux_by_flux_ratio_sq": ["sum"],
     }
-    t0 = timer()
     agg_df = df.groupby("object_id").agg(aggs)
-    etl_times["t_groupby_agg"] += timer() - t0
 
     agg_df.columns = ravel_column_names(agg_df.columns)
 
-    t0 = timer()
     agg_df["flux_diff"] = agg_df["flux_max"] - agg_df["flux_min"]
     agg_df["flux_dif2"] = agg_df["flux_diff"] / agg_df["flux_mean"]
     agg_df["flux_w_mean"] = (
@@ -162,21 +145,14 @@ def etl_cpu_pandas(df, df_meta, etl_times):
     )
     agg_df["flux_dif3"] = agg_df["flux_diff"] / agg_df["flux_w_mean"]
     agg_df["mjd_diff"] = agg_df["mjd_max"] - agg_df["mjd_min"]
-    etl_times["t_arithm"] += timer() - t0
 
-    t0 = timer()
     agg_df = agg_df.drop(["mjd_max", "mjd_min"], axis=1)
-    etl_times["t_drop"] += timer() - t0
 
     agg_df = agg_df.reset_index()
 
-    t0 = timer()
     df_meta = df_meta.drop(["ra", "decl", "gal_l", "gal_b"], axis=1)
-    etl_times["t_drop"] += timer() - t0
 
-    t0 = timer()
     df_meta = df_meta.merge(agg_df, on="object_id", how="left")
-    etl_times["t_merge"] += timer() - t0
 
     etl_times["t_etl"] += timer() - t_etl_start
 
@@ -315,13 +291,10 @@ def load_data_pandas(dataset_path, skip_rows, dtypes, meta_dtypes):
     return train, train_meta, test, test_meta
 
 
-def split_step(train_final, test_final, etl_times):
-    t_etl_start = timer()
+def split_step(train_final, test_final):
 
-    t0 = timer()
     X = train_final.drop(["object_id", "target"], axis=1).values
     Xt = test_final.drop(["object_id"], axis=1).values
-    etl_times["t_drop"] += timer() - t0
 
     y = train_final["target"]
     assert X.shape[1] == Xt.shape[1]
@@ -332,17 +305,10 @@ def split_step(train_final, test_final, etl_times):
 
     lbl = LabelEncoder()
     y = lbl.fit_transform(y)
-    # print(lbl.classes_)
 
-    t0 = timer()
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.1, stratify=y, random_state=126
-    )
-    etl_times["t_train_test_split"] += timer() - t0
+    (X_train, y_train, X_test, y_test), split_time = split(X, y, test_size=0.1, random_state=126)
 
-    etl_times["t_etl"] += timer() - t_etl_start
-
-    return (X_train, y_train, X_test, y_test, Xt, classes, class_weights), etl_times
+    return (X_train, y_train, X_test, y_test, Xt, classes, class_weights), split_time
 
 
 def etl_all_ibis(
@@ -356,17 +322,10 @@ def etl_all_ibis(
     validation,
     dtypes,
     meta_dtypes,
+    etl_keys,
 ):
-    print("ibis version")
-    etl_times = {
-        "t_readcsv": 0.0,
-        "t_groupby_agg": 0.0,
-        "t_merge": 0.0,
-        "t_arithm": 0.0,
-        "t_drop": 0.0,
-        "t_train_test_split": 0.0,
-        "t_etl": 0.0,
-    }
+    print("Ibis version")
+    etl_times = {key: 0.0 for key in etl_keys}
 
     train, train_meta, test, test_meta, etl_times["t_readcsv"] = load_data_ibis(
         dataset_path=dataset_path,
@@ -388,17 +347,9 @@ def etl_all_ibis(
     return train_final, test_final, etl_times
 
 
-def etl_all_pandas(dataset_path, skip_rows, dtypes, meta_dtypes):
-    print("pandas version")
-    etl_times = {
-        "t_readcsv": 0.0,
-        "t_groupby_agg": 0.0,
-        "t_merge": 0.0,
-        "t_arithm": 0.0,
-        "t_drop": 0.0,
-        "t_train_test_split": 0.0,
-        "t_etl": 0.0,
-    }
+def etl_all_pandas(dataset_path, skip_rows, dtypes, meta_dtypes, etl_keys):
+    print("Pandas version")
+    etl_times = {key: 0.0 for key in etl_keys}
 
     t0 = timer()
     train, train_meta, test, test_meta = load_data_pandas(
@@ -442,16 +393,11 @@ def xgb_multi_weighted_logloss(y_predicted, y_true, classes, class_weights):
     return "wloss", loss
 
 
-def ml(ml_data):
-    # unpacking
-    X_train, y_train, X_test, y_test, Xt, classes, class_weights = ml_data
+def ml(train_final, test_final, ml_keys):
+    ml_times = {key: 0.0 for key in ml_keys}
 
-    ml_times = {
-        "t_dmatrix": 0.0,
-        "t_training": 0.0,
-        "t_infer": 0.0,
-        "t_ml": 0.0,
-    }
+    (X_train, y_train, X_test, y_test, Xt, classes, class_weights), ml_times["t_train_test_split"] \
+        = split_step(train_final, test_final)
 
     cpu_params = {
         "objective": "multi:softprob",
@@ -560,6 +506,8 @@ def run_benchmark(parameters):
         [(columns_names[i], meta_dtypes[i]) for i in range(len(meta_dtypes))]
     )
 
+    etl_keys = ["t_readcsv", "t_etl"]
+    ml_keys = ["t_train_test_split", "t_dmatrix", "t_training", "t_infer", "t_ml"]
     try:
 
         import_pandas_into_module_namespace(
@@ -583,17 +531,15 @@ def run_benchmark(parameters):
                 validation=parameters["validation"],
                 dtypes=dtypes,
                 meta_dtypes=meta_dtypes,
+                etl_keys=etl_keys,
             )
 
-            ml_data_ibis, etl_times_ibis = split_step(
-                train_final_ibis, test_final_ibis, etl_times_ibis
-            )
             print_times(times=etl_times_ibis, backend="Ibis")
             etl_times_ibis["Backend"] = "Ibis"
 
             if not parameters["no_ml"]:
                 print("using ml with dataframes from Ibis")
-                ml_times_ibis = ml(ml_data_ibis)
+                ml_times_ibis = ml(train_final_ibis, test_final_ibis, ml_keys)
                 print_times(times=ml_times_ibis, backend="Ibis")
                 ml_times_ibis["Backend"] = "Ibis"
 
@@ -602,15 +548,15 @@ def run_benchmark(parameters):
             skip_rows=skip_rows,
             dtypes=dtypes,
             meta_dtypes=meta_dtypes,
+            etl_keys=etl_keys,
         )
 
-        ml_data, etl_times = split_step(train_final, test_final, etl_times)
         print_times(times=etl_times, backend=parameters["pandas_mode"])
         etl_times["Backend"] = parameters["pandas_mode"]
 
         if not parameters["no_ml"]:
             print("using ml with dataframes from Pandas")
-            ml_times = ml(ml_data)
+            ml_times = ml(train_final, test_final, ml_keys)
             print_times(times=ml_times, backend=parameters["pandas_mode"])
             ml_times["Backend"] = parameters["pandas_mode"]
 
