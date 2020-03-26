@@ -136,9 +136,14 @@ def main():
         help="MySQL database to use to store benchmark results.",
     )
     optional.add_argument(
-        "-db-table",
-        dest="db_table",
-        help="Table to use to store results for this benchmark.",
+        "-db-table-etl",
+        dest="db_table_etl",
+        help="Table to use to store ETL results for this benchmark.",
+    )
+    optional.add_argument(
+        "-db-table-ml",
+        dest="db_table_ml",
+        help="Table to use to store ML results for this benchmark.",
     )
     # Omnisci server parameters
     optional.add_argument(
@@ -232,6 +237,27 @@ def main():
         args.calcite_port = random_if_default(
             value=args.calcite_port, least=60000, greater=69999, default=-1
         )
+        
+        # Initializing of values to be reported to MySQL database
+        reporting_fields_plasticc_etl = {"iteration_number": "VARCHAR(500) NOT NULL",
+                                         "t_readcsv": "VARCHAR(500) NOT NULL",
+                                         "t_groupby_agg": "VARCHAR(500) NOT NULL",
+                                         "t_merge": "VARCHAR(500) NOT NULL",
+                                         "t_arithm": "VARCHAR(500) NOT NULL",
+                                         "t_drop": "VARCHAR(500) NOT NULL",
+                                         "t_train_test_split": "VARCHAR(500) NOT NULL",
+                                         "t_etl": "VARCHAR(500) NOT NULL",
+                                         "BackEnd": "VARCHAR(100) NOT NULL"
+                                         }
+        reporting_fields_plasticc_ml = {"iteration_number": "VARCHAR(500) NOT NULL",
+                                        "t_dmatrix": "VARCHAR(500) NOT NULL",
+                                        "t_training": "VARCHAR(500) NOT NULL",
+                                        "t_infer": "VARCHAR(500) NOT NULL",
+                                        "t_ml": "VARCHAR(500) NOT NULL",
+                                        "BackEnd": "VARCHAR(100) NOT NULL"
+                                        }
+        
+        
 
         if args.bench_name == "ny_taxi":
             from taxi import run_benchmark
@@ -303,27 +329,42 @@ def main():
                     backend_res["Iteration"] = iter_num
                     ml_results.append(backend_res)
 
-        # if args.db_user is not "":
-        #     print("Connecting to database")
-        #     db = mysql.connector.connect(
-        #         host=args.db_server,
-        #         port=args.db_port,
-        #         user=args.db_user,
-        #         passwd=args.db_pass,
-        #         db=args.db_name,
-        #     )
-        #     db_reporter = DbReport(
-        #         db,
-        #         args.db_table,
-        #         {
-        #             "QueryName": "VARCHAR(500) NOT NULL",
-        #             "IbisCommitHash": "VARCHAR(500) NOT NULL",
-        #             "BackEnd": "VARCHAR(100) NOT NULL",
-        #         },
-        #         results[0][0]
-        #     )
-        #     for result in results:
-        #           db_reporter.submit(result)
+            # Reporting to MySQL database
+            if args.db_user is not "":
+                if iter_num == 1:
+                    db = mysql.connector.connect(
+                        host=args.db_server,
+                        port=args.db_port,
+                        user=args.db_user,
+                        passwd=args.db_password,
+                        db=args.db_name,
+                    )
+
+                    reporting_init_fields = {"OmnisciCommitHash":args.commit_omnisci,
+                                             "IbisCommitHash": args.commit_ibis
+                                            }
+
+                    reporting_fields_benchmark_etl = {x: "VARCHAR(500) NOT NULL" for x in etl_results.keys()}
+                    db_reporter_etl = DbReport(
+                        db,
+                        args.db_table_etl,
+                        reporting_fields_benchmark_etl,
+                        reporting_init_fields
+                    )
+                    
+                    if len(ml_results) is not 0:
+                        reporting_fields_benchmark_ml = {x: "VARCHAR(500) NOT NULL" for x in ml_results.keys()}
+                        db_reporter_ml = DbReport(
+                            db,
+                            args.db_table_ml,
+                            reporting_fields_benchmark_ml,
+                            reporting_init_fields
+                        )
+                    
+                db_reporter_etl.submit(etl_results)
+                if len(ml_results) is not 0:
+                    db_reporter_ml.submit(ml_results)
+                    
         omnisci_server = None
     except Exception:
         traceback.print_exc(file=sys.stdout)
