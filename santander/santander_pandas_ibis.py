@@ -384,6 +384,11 @@ def run_benchmark(parameters):
     columns_names = ["ID_code", "target"] + var_cols
     columns_types_pd = ["object", "int64"] + ["float64" for _ in range(200)]
     columns_types_ibis = ["string", "int32"] + ["decimal(8, 4)" for _ in range(200)]
+    
+    etl_times_ibis = None
+    ml_times_ibis = None
+    etl_times = None
+    ml_times = None
 
     try:
 
@@ -444,6 +449,8 @@ def run_benchmark(parameters):
                 print_times(times=ml_scores_ibis, backend="Ibis")
                 ml_scores_ibis["Backend"] = "Ibis"
 
+        print("parameters['validation']", parameters["validation"])
+        print("parameters", parameters)
         # Results validation block (comparison of etl_ibis and etl_pandas outputs)
         if parameters["validation"] and not parameters["no_ibis"]:
             print("Validation of ETL query results with original input table ...")

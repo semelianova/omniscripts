@@ -237,7 +237,8 @@ def main():
         args.calcite_port = random_if_default(
             value=args.calcite_port, least=60000, greater=69999, default=-1
         )
-
+        args.validation = False if args.no_ibis else args.validation
+        
         if args.bench_name == "ny_taxi":
             from taxi import run_benchmark
         elif args.bench_name == "santander":
@@ -257,6 +258,7 @@ def main():
             "ray_tmpdir": args.ray_tmpdir,
             "ray_memory": args.ray_memory,
             "gpu_memory": args.gpu_memory,
+            "validation": args.validation
         }
 
         omnisci_server_worker = None
@@ -279,13 +281,11 @@ def main():
             parameters["table"] = args.table
             parameters["dnd"] = args.dnd
             parameters["dni"] = args.dni
-            parameters["validation"] = args.validation
 
         etl_results = []
         ml_results = []
-        print(parameters)
         for iter_num in range(1, args.iterations + 1):
-            print(f"Iteration №{iter_num}")
+            print(f"Iteration number {iter_num}")
 
             if not args.no_ibis:
                 omnisci_server_worker = OmnisciServerWorker(omnisci_server)
@@ -294,6 +294,7 @@ def main():
                     omnisci_server_worker.ipc_connect_to_server() if args.ipc_connection else omnisci_server_worker.connect_to_server()
                 omnisci_server.launch()
 
+            print(parameters)
             result = run_benchmark(parameters)
 
             if not args.no_ibis:
@@ -315,7 +316,7 @@ def main():
                         host=args.db_server,
                         port=args.db_port,
                         user=args.db_user,
-                        passwd=args.db_password,
+                        passwd=args.db_pass,
                         db=args.db_name,
                     )
 

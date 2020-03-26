@@ -60,7 +60,7 @@ def convert_type_ibis2pandas(types):
 def import_pandas_into_module_namespace(
     namespace, mode, ray_tmpdir=None, ray_memory=None
 ):
-    if mode == "Pandas":
+    if mode == "Pandas" or "pandas":
         print("Running on Pandas")
         import pandas as pd
     else:
