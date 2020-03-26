@@ -294,7 +294,6 @@ def main():
                     omnisci_server_worker.ipc_connect_to_server() if args.ipc_connection else omnisci_server_worker.connect_to_server()
                 omnisci_server.launch()
 
-            print(parameters)
             result = run_benchmark(parameters)
 
             if not args.no_ibis:
@@ -324,7 +323,10 @@ def main():
                                              "IbisCommitHash": args.commit_ibis
                                             }
 
-                    reporting_fields_benchmark_etl = {x: "VARCHAR(500) NOT NULL" for x in etl_results.keys()}
+                    reporting_fields_benchmark_etl = {x: "VARCHAR(500) NOT NULL" for x in etl_results[0]}
+                    if len(etl_results) is not 1:
+                        reporting_fields_benchmark_etl.update({x: "VARCHAR(500) NOT NULL" for x in etl_results[1]})
+
                     db_reporter_etl = DbReport(
                         db,
                         args.db_table_etl,
@@ -333,17 +335,23 @@ def main():
                     )
                     
                     if len(ml_results) is not 0:
-                        reporting_fields_benchmark_ml = {x: "VARCHAR(500) NOT NULL" for x in ml_results.keys()}
+                        reporting_fields_benchmark_ml = {x: "VARCHAR(500) NOT NULL" for x in ml_results[0]}
+                        if len(ml_results) is not 1:
+                            reporting_fields_benchmark_etl.update({x: "VARCHAR(500) NOT NULL" for x in ml_results[1]})
+                            
                         db_reporter_ml = DbReport(
                             db,
                             args.db_table_ml,
                             reporting_fields_benchmark_ml,
                             reporting_init_fields
                         )
+                
+                for result in etl_results:
+                    db_reporter_etl.submit(result)
                     
-                db_reporter_etl.submit(etl_results)
                 if len(ml_results) is not 0:
-                    db_reporter_ml.submit(ml_results)
+                    for result in ml_results:
+                        db_reporter_etl.submit(result)
                     
         omnisci_server = None
     except Exception:

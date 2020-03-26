@@ -449,8 +449,6 @@ def run_benchmark(parameters):
                 print_times(times=ml_scores_ibis, backend="Ibis")
                 ml_scores_ibis["Backend"] = "Ibis"
 
-        print("parameters['validation']", parameters["validation"])
-        print("parameters", parameters)
         # Results validation block (comparison of etl_ibis and etl_pandas outputs)
         if parameters["validation"] and not parameters["no_ibis"]:
             print("Validation of ETL query results with original input table ...")
